@@ -296,9 +296,10 @@ private struct DeviceSidebarRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            // 不用强调色：选中行背景就是强调色，图标会看不见；secondary 在选中时自动变白
             Image(systemName: cfg.kind.symbol)
                 .font(.system(size: 15))
-                .foregroundStyle(.tint)
+                .foregroundStyle(.secondary)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 1) {
                 Text(cfg.name).lineLimit(1)
@@ -364,23 +365,29 @@ private struct DeviceDetail: View {
     @ObservedObject var model: SettingsModel
     @Binding var cfg: DeviceConfig
 
+    // 注意：在回调里多次给 cfg 的属性赋值，每次都基于渲染时的旧快照写回，只有最后一次生效；
+    // 所以先改本地副本，再整体赋值一次
     private var presetSelection: Binding<String> {
         Binding(get: {
             guard let p = Presets.preset(id: cfg.presetID), p.kind == cfg.kind else { return Presets.customID }
             return p.id
         }, set: { id in
-            cfg.presetID = id == Presets.customID ? nil : id
-            if let p = Presets.preset(id: id) { cfg.width = p.width; cfg.height = p.height }
+            var c = cfg
+            c.presetID = id == Presets.customID ? nil : id
+            if let p = Presets.preset(id: id) { c.width = p.width; c.height = p.height }
+            cfg = c
         })
     }
 
     private var kindSelection: Binding<DeviceKind> {
         Binding(get: { cfg.kind }, set: { k in
-            cfg.kind = k
-            if Presets.preset(id: cfg.presetID)?.kind != k {
-                let fresh = DeviceConfig.make(name: cfg.name, kind: k)
-                cfg.presetID = fresh.presetID; cfg.width = fresh.width; cfg.height = fresh.height
+            var c = cfg
+            c.kind = k
+            if Presets.preset(id: c.presetID)?.kind != k {
+                let fresh = DeviceConfig.make(name: c.name, kind: k)
+                c.presetID = fresh.presetID; c.width = fresh.width; c.height = fresh.height
             }
+            cfg = c
         })
     }
 
