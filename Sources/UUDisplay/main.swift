@@ -3,7 +3,8 @@
 //      UUDisplay --simulate "A>B" 8            先按 A 建屏，3 秒后识别为 B 重建
 //      UUDisplay --render-settings <目录>       渲染设置窗口各页面为 PNG
 //      UUDisplay --render-onboarding <目录>     渲染首次引导三步为 PNG
-//      UUDisplay --dump-devices                打印从 UU 读到的设备及预填配置
+//      UUDisplay --dump-devices [--import]     打印从 UU 读到的设备及预填配置；--import 同时写入配置
+//      UUDisplay --dump-ax                     打印 UU 主窗口的界面树（UU 改版后核对结构）
 //      UUDisplay --watchdog                    看门狗模式（由 launchd 托管）
 //      UUDisplay --onboarding                  只展示首次引导
 import AppKit
@@ -23,9 +24,19 @@ if CommandLine.arguments.contains("--connection-status") {
     exit(0)
 }
 
+if CommandLine.arguments.contains("--dump-ax") {
+    if !UUReader.hasMainWindow { UUReader.showMainWindow(); Thread.sleep(forTimeInterval: 1) }
+    UUReader.dumpTree()
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--dump-devices") {
     if !UUReader.hasMainWindow { UUReader.showMainWindow(); Thread.sleep(forTimeInterval: 1) }
     guard let devices = UUReader.readDevices() else { print("未读到 UU 主窗口"); exit(1) }
+    if CommandLine.arguments.contains("--import") {
+        print("导入：\(ConfigStore.shared.importFromUU().map(String.init) ?? "失败")")
+        ConfigStore.shared.config.devices.forEach { print("  \($0.name)\t\($0.kind.label)\t\($0.sizeLabel)\($0.needsReview ? "（待核对）" : "")") }
+    }
     for d in devices {
         let cfg = DeviceConfig.make(name: d.name, kind: Presets.guessKind(name: d.name, isComputerGroup: d.isComputerGroup))
         let size = cfg.sizeLabel

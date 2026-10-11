@@ -113,14 +113,24 @@ final class Coordinator {
         controllerName = name
         Log.info("控制端：\(name)")
         let cfg: DeviceConfig?
+        // 列表里没有这台：可能是后来才在 UU 登录的新设备，先从 UU 重新读一次设备列表
+        if store.device(named: name) == nil, simulatedName == nil, store.importFromUU() != nil {
+            Log.info("「\(name)」不在列表里，已从 UU 重新读取设备列表")
+        }
         if let known = store.device(named: name) {
             cfg = known
             store.config.lastDevice = name
         } else if simulatedName != nil {
             cfg = DeviceConfig.make(name: name, kind: Presets.guessKind(name: name, isComputerGroup: false))
         } else {
-            cfg = store.device(named: store.config.defaultDevice)
-            Log.info("「\(name)」未配置，使用默认设备「\(cfg?.name ?? "无")」")
+            // 新版 UU 的设备列表里不一定有手机/平板：把连进来的设备记进列表，之后在设置里能直接调整。
+            // 认得出型号就按它的尺寸；认不出时优先用默认设备，没有默认设备再用推测的尺寸
+            let added = DeviceConfig.make(name: name, kind: Presets.guessKind(name: name, isComputerGroup: false))
+            store.config.devices.append(added)
+            let fallback = store.device(named: store.config.defaultDevice)
+            cfg = added.needsReview ? (fallback ?? added) : added
+            if cfg?.name == name { store.config.lastDevice = name }
+            Log.info("「\(name)」未配置，已加入设备列表（\(added.sizeLabel)），使用「\(cfg?.name ?? "无")」")
         }
         apply(cfg)
     }

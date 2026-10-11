@@ -151,9 +151,15 @@ final class ConfigStore {
     func importFromUU() -> Int? {
         guard UUReader.isTrusted else { return nil }
         if !UUReader.hasMainWindow { UUReader.showMainWindow(); Thread.sleep(forTimeInterval: 1) }
-        guard let found = UUReader.readDevices()?.filter({ !$0.isSelf }) else { return nil }
+        // 新版 UU 不再标「本机」，再按电脑名排除一次
+        let me = Host.current().localizedName
+        guard let found = UUReader.readDevices()?.filter({ !$0.isSelf && $0.name != me }) else { return nil }
         var merged: [DeviceConfig] = found.map { d in
             device(named: d.name) ?? DeviceConfig.make(name: d.name, kind: Presets.guessKind(name: d.name, isComputerGroup: d.isComputerGroup))
+        }
+        // 新版 UU 的设备列表里不一定有手机/平板，正在控制本机的设备也一并加入
+        for name in UUReader.readControllers() ?? [] where !merged.contains(where: { $0.name == name }) {
+            merged.append(device(named: name) ?? DeviceConfig.make(name: name, kind: Presets.guessKind(name: name, isComputerGroup: false)))
         }
         for old in config.devices where !merged.contains(where: { $0.name == old.name }) { merged.append(old) }
         config.devices = merged

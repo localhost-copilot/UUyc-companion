@@ -61,6 +61,8 @@ final class SettingsModel: ObservableObject {
         if login != launchAtLogin { launchAtLogin = login }
         let ax = UUReader.isTrusted
         if ax != trusted { trusted = ax }
+        // 协调器可能在连接时补进了新设备（编辑会立即写回配置，所以这里不会覆盖未保存的改动）
+        if store.config.devices != devices { devices = store.config.devices }
     }
 
     // MARK: 设备
@@ -108,8 +110,10 @@ final class SettingsModel: ObservableObject {
         page = .device(name)
     }
 
-    func importFromUU() {
+    /// - Parameter quiet: 打开窗口时自动读取，失败也不提示
+    func importFromUU(quiet: Bool = false) {
         guard let n = store.importFromUU() else {
+            if quiet { return }
             importMessage = trusted
                 ? "没有读到 UU远程 的设备列表。请打开 UU远程 并停在「全部设备」页面，再试一次。"
                 : "需要先允许读取设备名称（在「通用」里授权）。"
@@ -625,10 +629,13 @@ final class SettingsWindowController {
     func show(page: SettingsPage? = nil) {
         if let window, let model {
             if let page { model.page = page }
+            model.importFromUU(quiet: true)
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
+        // 每次打开都从 UU 读一遍，新登录的设备直接出现在列表里
+        ConfigStore.shared.importFromUU()
         let model = SettingsModel()
         if let page { model.page = page }
         model.onConfigChanged = onConfigChanged
