@@ -14,12 +14,21 @@ import SwiftUI
 
 if CommandLine.arguments.contains("--watchdog") { Watchdog.run() }
 
+// 只读诊断，不启动协调器或改变屏幕布局。
+if CommandLine.arguments.contains("--connection-status") {
+    print("辅助功能权限：\(UUReader.isTrusted)")
+    print("覆盖窗口：\(UUMonitor.overlayPresent())")
+    print("控制端：\(UUReader.readControllers() ?? [])")
+    print("已连接：\(UUMonitor.connectionPresent())")
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--dump-devices") {
     if !UUReader.hasMainWindow { UUReader.showMainWindow(); Thread.sleep(forTimeInterval: 1) }
     guard let devices = UUReader.readDevices() else { print("未读到 UU 主窗口"); exit(1) }
     for d in devices {
         let cfg = DeviceConfig.make(name: d.name, kind: Presets.guessKind(name: d.name, isComputerGroup: d.isComputerGroup))
-        let size = cfg.kind == .computer ? "不切换" : cfg.sizeLabel
+        let size = cfg.sizeLabel
         print("\(d.isSelf ? "（本机，排除）" : "")\(d.name)\t→ \(cfg.kind.label)\t\(size)")
     }
     print("控制端：\(UUReader.readControllers() ?? [])")

@@ -105,6 +105,8 @@ enum UUReader {
             var inner: [AXUIElement] = []
             flatten(row, into: &inner)
             let texts = inner.filter { role($0) == kAXStaticTextRole }.compactMap { value($0) }
+            // 只有远控会话行才能作为连接信号，避免把设备列表或其他表格当成控制端。
+            guard texts.contains("远程控制") else { continue }
             if let n = texts.first(where: { $0 != "远程控制" && !$0.hasPrefix("连接时长") && !$0.isEmpty }),
                !names.contains(n) {
                 names.append(n)

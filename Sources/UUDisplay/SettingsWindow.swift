@@ -308,7 +308,7 @@ struct ControlledPanel: View {
                 isOn: Binding(get: { model.autoVirtual }, set: { model.toggleAutoVirtual($0) }))
             Divider()
             row("远程时熄灭 Mac 的屏幕",
-                "远程期间，Mac 自带的屏幕和外接显示器会暂时熄灭，只留下那块虚拟屏幕，打开的窗口不会跑到你看不见的地方。断开后屏幕会自动亮回来。用电脑连接时不受影响。万一屏幕没有亮回来，可以看看「找回屏幕的方法」。",
+                "远程期间，Mac 自带的屏幕和外接显示器会暂时熄灭，只留下那块虚拟屏幕，打开的窗口不会跑到你看不见的地方。断开后屏幕会自动亮回来。电脑、平板和手机连接时都可以使用。万一屏幕没有亮回来，可以看看「找回屏幕的方法」。",
                 isOn: Binding(get: { model.disablePhysical }, set: { model.toggleDisablePhysical($0) }),
                 enabled: model.autoVirtual)
             if !model.autoVirtual {
@@ -413,7 +413,7 @@ struct SettingsView: View {
         VStack(spacing: 0) {
             // 上：工作原理图
             HStack(alignment: .top, spacing: 0) {
-                FlowNode(caption: "你的平板和手机", buttonTitle: "设置平板和手机",
+                FlowNode(caption: "你的电脑、平板和手机", buttonTitle: "设置连接设备",
                          selected: model.expanded == .controller, action: { model.toggle(.controller) }) {
                     ControllerIcon()
                 }

@@ -22,5 +22,6 @@ let package = Package(
             .product(name: "TourKit", package: "TourKit"),
         ]),
         .executableTarget(name: "dispoff", dependencies: ["CGVirtualDisplayBridge"]),
+        .testTarget(name: "UUDisplayTests", dependencies: ["UUDisplay"]),
     ]
 )

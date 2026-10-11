@@ -79,7 +79,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         none.representedObject = ""
         none.state = store.config.defaultDevice == nil ? .on : .off
         sub.addItem(none)
-        for d in store.config.devices where d.kind != .computer {
+        for d in store.config.devices {
             let it = action("\(d.name)（\(d.sizeLabel)）", #selector(pickDefault(_:)))
             it.representedObject = d.name
             it.state = store.config.defaultDevice == d.name ? .on : .off

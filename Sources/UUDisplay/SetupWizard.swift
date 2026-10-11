@@ -53,7 +53,12 @@ struct DeviceRow: View {
     var onDelete: () -> Void
 
     private var presetBinding: Binding<String> {
-        Binding(get: { cfg.presetID ?? Presets.customID }, set: { id in
+        Binding(get: {
+            guard let preset = Presets.preset(id: cfg.presetID), preset.kind == cfg.kind else {
+                return Presets.customID
+            }
+            return preset.id
+        }, set: { id in
             cfg.presetID = id == Presets.customID ? nil : id
             if let p = Presets.preset(id: id) { cfg.width = p.width; cfg.height = p.height }
         })
@@ -64,7 +69,7 @@ struct DeviceRow: View {
             Text(cfg.name).frame(width: 150, alignment: .leading).lineLimit(1)
             Picker("", selection: Binding(get: { cfg.kind }, set: { k in
                 cfg.kind = k
-                if k != .computer, Presets.preset(id: cfg.presetID)?.kind != k {
+                if Presets.preset(id: cfg.presetID)?.kind != k {
                     let fresh = DeviceConfig.make(name: cfg.name, kind: k)
                     cfg.presetID = fresh.presetID; cfg.width = fresh.width; cfg.height = fresh.height
                 }
@@ -73,16 +78,13 @@ struct DeviceRow: View {
             }
             .pickerStyle(.segmented).labelsHidden().frame(width: 150)
 
-            if cfg.kind == .computer {
-                Text("保持原样").foregroundStyle(.secondary)
-                Spacer()
-            } else {
+            Group {
                 Picker("", selection: presetBinding) {
                     ForEach(Presets.all.filter { $0.kind == cfg.kind }) { Text($0.label).tag($0.id) }
                     Text("自定义").tag(Presets.customID)
                 }
                 .labelsHidden().frame(width: 230)
-                if cfg.presetID == nil {
+                if presetBinding.wrappedValue == Presets.customID {
                     TextField("宽", value: $cfg.width, format: .number.grouping(.never)).frame(width: 60)
                     Text("×")
                     TextField("高", value: $cfg.height, format: .number.grouping(.never)).frame(width: 60)
@@ -106,7 +108,7 @@ struct WizardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(embedded ? "设置平板和手机" : "UU远程伴侣 · 设置平板和手机").font(.title2.bold())
+            Text(embedded ? "设置连接设备" : "UU远程伴侣 · 设置连接设备").font(.title2.bold())
             if let m = model.message { Text(m).foregroundStyle(.secondary) }
             if !model.trusted {
                 HStack {
@@ -132,7 +134,7 @@ struct WizardView: View {
             HStack {
                 Picker("认不出设备时，默认当作", selection: $model.defaultDevice) {
                     Text("不调整").tag("")
-                    ForEach(model.rows.filter { $0.kind != .computer }) { Text($0.name).tag($0.name) }
+                    ForEach(model.rows) { Text($0.name).tag($0.name) }
                 }
                 .frame(width: 380)
                 Spacer()

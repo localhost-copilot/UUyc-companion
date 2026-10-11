@@ -28,6 +28,9 @@ enum Presets {
 
     // 2026-10 联网核实：OPPO 官方规格页、Apple 技术规格页、GSMArena
     static let all: [Preset] = [
+        Preset(id: "computer-1080p", name: "电脑 1080p（16:9）", kind: .computer, width: 1920, height: 1080),
+        Preset(id: "computer-1440p", name: "电脑 1440p（16:9）", kind: .computer, width: 2560, height: 1440),
+        Preset(id: "computer-16x10", name: "电脑（16:10）", kind: .computer, width: 2560, height: 1600),
         Preset(id: "oppo-pad-3-pro", name: "OPPO Pad 3 Pro", kind: .tablet, width: 3000, height: 2120),
         Preset(id: "ipad-air-11", name: "iPad Air 11 英寸", kind: .tablet, width: 2360, height: 1640),
         Preset(id: "ipad-air-13", name: "iPad Air 13 英寸", kind: .tablet, width: 2732, height: 2048),
@@ -52,7 +55,7 @@ enum Presets {
         switch kind {
         case .tablet: return preset(id: "ipad-air-11")
         case .phone: return preset(id: "android-20x9")
-        case .computer: return nil
+        case .computer: return preset(id: "computer-1080p")
         }
     }
 

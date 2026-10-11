@@ -37,7 +37,7 @@ final class Coordinator {
     var statusText: String {
         if display.wedged { return "⛔️ 屏幕设置暂时卡住了，请重启 Mac" }
         if store.config.paused { return "已暂停：连接时不做调整" }
-        guard connected else { return "等待平板或手机连接" }
+        guard connected else { return "等待设备连接" }
         let who = controllerName ?? "未知设备"
         if let c = display.current, display.isActive {
             return "\(who) 已连接 · 屏幕已换成 \(c.sizeLabel)\(display.physicalOff ? " · Mac 屏幕已熄灭" : "")"
@@ -127,9 +127,9 @@ final class Coordinator {
 
     private func apply(_ cfg: DeviceConfig?) {
         defer { onChange?() }
-        guard let cfg, cfg.kind != .computer else {
+        guard let cfg else {
             if display.isActive { display.remove() }
-            Log.info(cfg == nil ? "无可用配置，不切换" : "「\(cfg!.name)」是电脑，不切换")
+            Log.info("无可用配置，不切换")
             return
         }
         if display.matches(cfg) { return }

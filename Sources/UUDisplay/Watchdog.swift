@@ -7,6 +7,7 @@ import ServiceManagement
 enum Heartbeat {
     static let appURL = ConfigStore.dir.appendingPathComponent("heartbeat-app")
     static let watchdogURL = ConfigStore.dir.appendingPathComponent("heartbeat-watchdog")
+    static let connectionURL = ConfigStore.dir.appendingPathComponent("heartbeat-connection")
 
     static func beat(_ url: URL) {
         try? "\(getpid())".write(to: url, atomically: true, encoding: .utf8)
@@ -52,6 +53,8 @@ enum Watchdog {
                 let appHealthy = appExists && (hb?.age ?? .infinity) < appMaxAge
                 // 测试开关：假定 UU 一直连着，用于单独验证心跳超时
                 let uu = assumeUU || UUMonitor.overlayPresent()
+                    || (appHealthy && Heartbeat.read(Heartbeat.connectionURL)?.pid == hb?.pid
+                        && Heartbeat.alive(Heartbeat.connectionURL, maxAge: appMaxAge))
                 uuGoneSince = uu ? nil : (uuGoneSince ?? Date())
 
                 if !appHealthy {
