@@ -30,8 +30,8 @@ UU远程 的 Mac 被控端没有 Windows 版那样的「超级屏」（虚拟屏
 - 断开后，屏幕、窗口位置、显示器排列**全部自动还原**
 
 <div align="center">
-<img src="docs/images/tour-welcome.png" width="45%" alt="功能介绍：欢迎">
-<img src="docs/images/tour-match.png" width="45%" alt="功能介绍：画面刚好铺满">
+<img src="docs/images/onboarding-welcome.png" width="45%" alt="首次引导：欢迎">
+<img src="docs/images/onboarding-devices.png" width="45%" alt="首次引导：读到的设备">
 </div>
 
 ## 功能
@@ -49,12 +49,12 @@ UU远程 的 Mac 被控端没有 Windows 版那样的「超级屏」（虚拟屏
 ## 截图
 
 <div align="center">
-<img src="docs/images/settings.png" width="80%" alt="设置窗口">
-<p><sub>设置窗口：上面的图示说明了工作方式，点按钮展开对应的设置</sub></p>
-<img src="docs/images/settings-devices.png" width="80%" alt="设置平板和手机">
-<p><sub>设置平板和手机：为每台设备选择屏幕尺寸</sub></p>
-<img src="docs/images/settings-recover.png" width="80%" alt="找回屏幕的方法">
-<p><sub>找回屏幕的方法：快捷键与后台守护</sub></p>
+<img src="docs/images/settings-device.png" width="80%" alt="设备设置">
+<p><sub>设备设置：按真实比例预览屏幕尺寸；橙色标记表示尺寸是推测的，需要核对</sub></p>
+<img src="docs/images/settings-general.png" width="80%" alt="通用设置">
+<p><sub>通用：自动准备屏幕、熄灭 Mac 屏幕、开机自动打开、权限</sub></p>
+<img src="docs/images/settings-recovery.png" width="80%" alt="找回屏幕">
+<p><sub>找回屏幕：快捷键与后台守护</sub></p>
 </div>
 
 ## 系统要求
@@ -101,10 +101,12 @@ xattr -dr com.apple.quarantine "/Applications/UUyc companion.app"
 
 ### 第一次打开
 
-1. **功能介绍**：5 页图文，介绍它能做什么
+一个窗口三步完成：
+
+1. **介绍**：它能做什么
 2. **授权**：允许它读取 UU远程 里显示的设备名称。点「授权」后会打开系统设置，旁边出现一个小窗口，把里面的 UU远程伴侣 拖进列表就好
    - 这一项在 macOS 27 里叫「**设备控制和数据访问**」，更早的版本叫「**辅助功能**」
-3. **设置连接设备**：软件会自动读出你的 UU远程 账号里已登录的设备，确认每台设备的类型和屏幕尺寸后点「保存」。**屏幕尺寸务必核对**，见下一节
+3. **你的设备**：软件会自动读出你的 UU远程 账号里已登录的设备，并按名称填好屏幕尺寸。带橙色标记的是推测的尺寸，点「去核对尺寸」打开设置逐台确认。**屏幕尺寸务必核对**，见下一节
 
 之后它会待在**菜单栏**里（图标是两块叠在一起的屏幕），平板或手机连上就会自动工作。
 
@@ -124,13 +126,13 @@ xattr -dr com.apple.quarantine "/Applications/UUyc companion.app"
 如果你的设备不在「认识的型号」里，或者连上后画面有黑边，请查到它的屏幕分辨率，再手动填写：
 
 1. **查分辨率**：在设备的官方规格页找「屏幕分辨率」，或者搜索「设备型号 + 分辨率」。例如 iPad Air 11 英寸是 2360 × 1640
-2. 点菜单栏图标 › **设置…** › **设置连接设备**
-3. 在这台设备的尺寸下拉框里选「**自定义**」
+2. 点菜单栏图标 › **设置…**，在左侧选中这台设备
+3. 在「屏幕尺寸」下拉框里选「**自定义**」
 4. 填写**宽**和**高**：
    - 按**横屏**填写：两个数字中**大的填「宽」，小的填「高」**
    - 直接填规格表上的原始数字，**不要自己除以 2**
 5. 「**高清**」保持勾选（推荐），文字更清晰
-6. 点「**保存**」，立即生效（正在连接时也会马上换成新的尺寸）
+6. 改动立即生效，不需要保存（正在连接时也会马上换成新的尺寸）。上方的预览图按真实比例画出，可以直观对照设备屏幕的形状
 
 > 填的比例和设备屏幕对不上时，远程画面会出现黑边。按上面的步骤改正即可，不会造成其他影响。
 
@@ -138,9 +140,13 @@ xattr -dr com.apple.quarantine "/Applications/UUyc companion.app"
 
 点菜单栏图标 › **设置…**
 
-- **设置连接设备**：电脑、平板和手机用什么屏幕尺寸；认不出设备时默认当作哪台
-- **设置这台 Mac**：开机时自动打开、自动准备虚拟屏幕、远程时熄灭 Mac 的屏幕
-- **找回屏幕的方法**：打开「远程时熄灭 Mac 的屏幕」后才能点，可以在这里打开后台守护
+左侧是设备列表，下方「＋」手动添加设备、「↻」从 UU远程 重新读取；所有改动立即生效。
+
+- **每台设备**：类型、屏幕尺寸、高清，以及「认不出设备时用这台」
+- **通用**：自动准备屏幕、远程时熄灭 Mac 的屏幕、开机时自动打开、权限
+- **找回屏幕**：快捷键说明，可以在这里打开后台守护
+
+菜单栏菜单顶部会显示当前状态：谁连着、屏幕换成了多大、Mac 屏幕是否熄灭；屏幕熄灭时会出现「点亮所有屏幕」。
 
 ### 万一屏幕没有亮回来
 
@@ -150,7 +156,7 @@ xattr -dr com.apple.quarantine "/Applications/UUyc companion.app"
 2. 重新打开 UU远程伴侣，它会自动恢复
 3. 重启 Mac，一定能恢复
 
-建议在「找回屏幕的方法」里打开**后台守护**：程序意外退出或卡住时，它会在几秒内自动把屏幕点亮。
+建议在「设置 › 找回屏幕」里打开**后台守护**：程序意外退出或卡住时，它会在几秒内自动把屏幕点亮。
 
 ## 注意事项
 
@@ -165,20 +171,20 @@ xattr -dr com.apple.quarantine "/Applications/UUyc companion.app"
 <details>
 <summary><b>设置里读不到 UU远程 的设备？</b></summary>
 
-请确认：已经完成授权（设置窗口里点「权限设置」查看）；UU远程 已经打开，并停在「全部设备」页面。然后点「重新读取」。也可以手动添加设备，名字要和 UU远程 里显示的一样。
+请确认：已经完成授权（「设置 › 通用 › 权限」查看）；UU远程 已经打开，并停在「全部设备」页面。然后点设置窗口左下角的「↻」。也可以手动添加设备，名字要和 UU远程 里显示的一样。
 </details>
 
 <details>
 <summary><b>连上后画面还是有黑边？</b></summary>
 
-1. 在「设置连接设备」里，确认这台设备选的屏幕尺寸和它的实际分辨率一致（横屏）
+1. 在设置窗口左侧选中这台设备，确认这台设备选的屏幕尺寸和它的实际分辨率一致（横屏）
 2. 在平板或手机的 UU远程 里打开「显示」面板，确认选中的显示屏是「UUyc companion · 设备名」
 </details>
 
 <details>
 <summary><b>升级后又提示需要授权？</b></summary>
 
-通常不需要重新授权。如果「权限设置」里显示未授权，而系统设置的列表里已经有 UU远程伴侣 或 UUDisplay（旧名字）：先选中它，点「−」删掉，再重新授权一次。
+通常不需要重新授权。如果「设置 › 通用 › 权限」里显示未授权，而系统设置的列表里已经有 UU远程伴侣 或 UUDisplay（旧名字）：先选中它，点「−」删掉，再重新授权一次。
 </details>
 
 <details>
@@ -190,13 +196,13 @@ xattr -dr com.apple.quarantine "/Applications/UUyc companion.app"
 <details>
 <summary><b>用另一台电脑连接时会怎样？</b></summary>
 
-在「设置连接设备」里，类型为「电脑」的设备也可以选择分辨率和高清显示，连接时会创建虚拟屏幕。请按控制端屏幕的实际尺寸设置；不希望自动调整时，可以在菜单栏暂停自动切换。
+在设置窗口里，类型为「电脑」的设备也可以选择分辨率和高清显示，连接时会创建虚拟屏幕。请按控制端屏幕的实际尺寸设置；不希望自动调整时，可以在菜单栏关掉「自动准备屏幕」。
 </details>
 
 ## 卸载
 
-1. 如果打开过后台守护，先在「设置 › 找回屏幕的方法」里**关掉后台守护**（这会把它彻底移除）
-2. 在设置窗口点「**完全退出**」，或在菜单栏菜单里点「退出」
+1. 如果打开过后台守护，先在「设置 › 找回屏幕」里**关掉后台守护**（这会把它彻底移除）
+2. 在菜单栏菜单里点「退出」
 3. 把「应用程序」文件夹里的 **UU远程伴侣** 移到废纸篓
 4. 可选：删除设置和日志
 
@@ -221,7 +227,7 @@ cd UUyc-companion && SIGN_IDENTITY=- scripts/build-app.sh
 生成的 App 在 `build/UUyc companion.app`。加上 `--install` 参数会安装到「应用程序」文件夹并打开。
 
 - `SIGN_IDENTITY=-` 表示用 ad-hoc 签名。缺点是每次重新构建后，系统授权都会失效，需要重新授权。如果你有自己的代码签名证书，把 `-` 换成证书名称，升级后授权就能保留
-- 只装了命令行工具（没有完整 Xcode）也能构建：内置的 PermissionFlow 和 TourKit 已经把需要 Xcode 宏插件的写法改掉了，详见各自目录下的 `VENDORED.md`
+- 只装了命令行工具（没有完整 Xcode）也能构建：内置的 PermissionFlow 已经把需要 Xcode 宏插件的写法改掉了，详见 `Vendor/PermissionFlow/VENDORED.md`
 
 <details>
 <summary><b>工作原理</b></summary>
@@ -237,7 +243,6 @@ cd UUyc-companion && SIGN_IDENTITY=- scripts/build-app.sh
 
 - [FreeDisplay](https://github.com/huberdf/FreeDisplay)（MIT）：`CGVirtualDisplay` 接口声明
 - [PermissionFlow](https://github.com/jaywcjlove/PermissionFlow)（MIT）：授权引导与拖拽授权面板
-- [TourKit](https://github.com/rampatra/TourKit)（MIT）：功能介绍页
 - 虚拟屏幕的实现思路参考了 [DeskPad](https://github.com/Stengo/DeskPad)、[Side Screen](https://github.com/tranvuongquocdat/SideScreen) 和 Chromium 的相关代码
 
 ## 许可证

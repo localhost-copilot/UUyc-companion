@@ -11,6 +11,13 @@ enum DeviceKind: String, Codable, CaseIterable, Identifiable {
         case .phone: return "手机"
         }
     }
+    var symbol: String {
+        switch self {
+        case .computer: return "laptopcomputer"
+        case .tablet: return "ipad.landscape"
+        case .phone: return "iphone"
+        }
+    }
 }
 
 /// 横屏原生像素
@@ -45,14 +52,25 @@ enum Presets {
 
     static func preset(id: String?) -> Preset? { all.first { $0.id == id } }
 
+    private static let rules: [(String, String)] = [
+        ("pad 3 pro", "oppo-pad-3-pro"), ("ipad air", "ipad-air-11"), ("ipad pro", "ipad-pro-11"),
+        ("ipad mini", "ipad-mini"), ("iphone", "iphone-17"), ("reno13 pro", "oppo-reno13-pro"),
+    ]
+
+    private static func match(name: String, kind: DeviceKind) -> Preset? {
+        let n = name.lowercased()
+        guard let hit = rules.first(where: { n.contains($0.0) }), let p = preset(id: hit.1), p.kind == kind else { return nil }
+        return p
+    }
+
+    /// 名称命中已知型号（否则只是按类型给的通用尺寸，需要用户核对）
+    static func recognizes(name: String, kind: DeviceKind) -> Bool {
+        kind == .computer || match(name: name, kind: kind) != nil
+    }
+
     /// 按 UU 中的设备名猜测预设
     static func guess(name: String, kind: DeviceKind) -> Preset? {
-        let n = name.lowercased()
-        let rules: [(String, String)] = [
-            ("pad 3 pro", "oppo-pad-3-pro"), ("ipad air", "ipad-air-11"), ("ipad pro", "ipad-pro-11"),
-            ("ipad mini", "ipad-mini"), ("iphone", "iphone-17"), ("reno13 pro", "oppo-reno13-pro"),
-        ]
-        if let hit = rules.first(where: { n.contains($0.0) }), let p = preset(id: hit.1), p.kind == kind { return p }
+        if let p = match(name: name, kind: kind) { return p }
         switch kind {
         case .tablet: return preset(id: "ipad-air-11")
         case .phone: return preset(id: "android-20x9")
@@ -77,6 +95,11 @@ struct DeviceConfig: Codable, Identifiable, Hashable {
     var id: String { name }
 
     var sizeLabel: String { "\(width)×\(height)\(hiDPI ? " 高清" : "")" }
+
+    /// 当前尺寸仍是按名称推测的通用值（没有选定已知型号，也没有自定义）
+    var needsReview: Bool {
+        presetID != nil && !Presets.recognizes(name: name, kind: kind)
+    }
 
     static func make(name: String, kind: DeviceKind) -> DeviceConfig {
         let p = Presets.guess(name: name, kind: kind)
@@ -120,6 +143,22 @@ final class ConfigStore {
     func device(named name: String?) -> DeviceConfig? {
         guard let name else { return nil }
         return config.devices.first { $0.name == name }
+    }
+
+    /// 从 UU 读取设备列表并入配置：已有设备保持原样，新设备按名称预填，读到的设备排在前面。
+    /// 返回读到的设备数（不含本机）；没有权限或读不到 UU 主窗口时返回 nil
+    @discardableResult
+    func importFromUU() -> Int? {
+        guard UUReader.isTrusted else { return nil }
+        if !UUReader.hasMainWindow { UUReader.showMainWindow(); Thread.sleep(forTimeInterval: 1) }
+        guard let found = UUReader.readDevices()?.filter({ !$0.isSelf }) else { return nil }
+        var merged: [DeviceConfig] = found.map { d in
+            device(named: d.name) ?? DeviceConfig.make(name: d.name, kind: Presets.guessKind(name: d.name, isComputerGroup: d.isComputerGroup))
+        }
+        for old in config.devices where !merged.contains(where: { $0.name == old.name }) { merged.append(old) }
+        config.devices = merged
+        if config.defaultDevice == nil { config.defaultDevice = merged.first { $0.kind == .tablet }?.name }
+        return found.count
     }
 
     private func save() {

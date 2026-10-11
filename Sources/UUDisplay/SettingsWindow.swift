@@ -1,20 +1,21 @@
-// 设置窗口（上中下结构）
-// 上：工作原理图「控制端 ⇢ 被控 Mac ⇢ 兜底」，点各自按钮向下展开对应面板（同一时间只展开一个）
-// 中：立即恢复所有屏幕 / 权限设置 / 功能导览
-// 下：关于本应用 / 完全退出（右对齐）
+// 设置窗口：左侧边栏（设备列表 / 通用 / 找回屏幕），右侧详情；所有修改立即生效，没有「保存」按钮
 import AppKit
+import PermissionFlow
 import ServiceManagement
 import SwiftUI
 import SystemSettingsKit
 
-enum SettingsPane: String, CaseIterable, Identifiable {
-    case controller, controlled, fallback
-    var id: String { rawValue }
+enum SettingsPage: Hashable {
+    case device(String)
+    case general
+    case recovery
 }
 
 final class SettingsModel: ObservableObject {
     // 注意：SwiftUI 的 @State 在仅有 Command Line Tools 时无法编译（宏插件缺失），界面状态统一放在 ObservableObject 里
-    @Published var expanded: SettingsPane?
+    @Published var page: SettingsPage? = .general
+    @Published var devices: [DeviceConfig]
+    @Published var defaultDevice: String
     @Published var autoVirtual: Bool
     @Published var disablePhysical: Bool
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -22,31 +23,34 @@ final class SettingsModel: ObservableObject {
     @Published var watchdogEnabled: Bool
     @Published var watchdogRunning = Watchdog.isRunning
     @Published var physicalOff = PhysicalDisplays.pending != nil
-    @Published var savedHint = false
+    @Published var trusted = UUReader.isTrusted
+    @Published var importMessage: String?
 
-    let devices = WizardModel()
     var onConfigChanged: (() -> Void)?
     var setDisablePhysical: ((Bool) -> Void)?
     var setPaused: ((Bool) -> Void)?
     var restorePhysical: (() -> Void)?
-    var openPermissions: (() -> Void)?
-    var openTour: (() -> Void)?
     private var timer: Timer?
+    private var pendingApply: DispatchWorkItem?
     private let store = ConfigStore.shared
 
     init() {
+        devices = store.config.devices
+        defaultDevice = store.config.defaultDevice ?? ""
         autoVirtual = !store.config.paused
         disablePhysical = store.config.shouldDisablePhysical
         watchdogEnabled = store.config.shouldRunWatchdog
+        if let first = devices.first(where: \.needsReview) ?? devices.first { page = .device(first.name) }
     }
-
-    var fallbackAvailable: Bool { autoVirtual && disablePhysical }
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
     }
 
-    func stop() { timer?.invalidate() }
+    func stop() {
+        timer?.invalidate()
+        pendingApply?.perform()
+    }
 
     func refresh() {
         let running = Watchdog.isRunning
@@ -55,29 +59,92 @@ final class SettingsModel: ObservableObject {
         if off != physicalOff { physicalOff = off }
         let login = SMAppService.mainApp.status == .enabled
         if login != launchAtLogin { launchAtLogin = login }
+        let ax = UUReader.isTrusted
+        if ax != trusted { trusted = ax }
     }
 
-    /// 点同一个按钮再次收起；兜底面板只在开启软关闭后可展开
-    func toggle(_ pane: SettingsPane) {
-        if pane == .fallback && !fallbackAvailable { return }
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
-            expanded = expanded == pane ? nil : pane
+    // MARK: 设备
+
+    func binding(for name: String) -> Binding<DeviceConfig>? {
+        guard let current = devices.first(where: { $0.name == name }) else { return nil }
+        return Binding(get: { [weak self] in self?.devices.first { $0.name == name } ?? current },
+                       set: { [weak self] in self?.update($0) })
+    }
+
+    func update(_ cfg: DeviceConfig) {
+        guard let i = devices.firstIndex(where: { $0.name == cfg.name }) else { return }
+        devices[i] = cfg
+        persistDevices()
+    }
+
+    /// 配置立即写盘；通知协调器重建虚拟屏稍作合并，避免输入自定义尺寸时每敲一个数字就重建一次
+    private func persistDevices() {
+        store.config.devices = devices
+        pendingApply?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.onConfigChanged?() }
+        pendingApply = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+    }
+
+    func setDefault(_ name: String) {
+        defaultDevice = name
+        store.config.defaultDevice = name.isEmpty ? nil : name
+    }
+
+    func remove(_ name: String) {
+        devices.removeAll { $0.name == name }
+        if defaultDevice == name { setDefault("") }
+        persistDevices()
+        page = devices.first.map { .device($0.name) } ?? .general
+    }
+
+    func add(name raw: String) {
+        let name = raw.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        if !devices.contains(where: { $0.name == name }) {
+            devices.append(DeviceConfig.make(name: name, kind: Presets.guessKind(name: name, isComputerGroup: false)))
+            persistDevices()
         }
+        page = .device(name)
     }
 
-    func saveDevices() {
-        devices.save()
-        onConfigChanged?()
-        savedHint = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.savedHint = false }
+    func importFromUU() {
+        guard let n = store.importFromUU() else {
+            importMessage = trusted
+                ? "没有读到 UU远程 的设备列表。请打开 UU远程 并停在「全部设备」页面，再试一次。"
+                : "需要先允许读取设备名称（在「通用」里授权）。"
+            return
+        }
+        importMessage = n == 0 ? "UU远程 里没有其他设备。" : nil
+        devices = store.config.devices
+        defaultDevice = store.config.defaultDevice ?? ""
+        persistDevices()
+        if case .device(let name)? = page, devices.contains(where: { $0.name == name }) { return }
+        if let first = devices.first { page = .device(first.name) }
     }
+
+    /// 用 NSAlert 输入名称（比在 SwiftUI 里维护弹层状态简单）
+    func promptAdd() {
+        let alert = NSAlert()
+        alert.messageText = "添加设备"
+        alert.informativeText = "名字要和 UU远程 里显示的完全一样，连接时才认得出来。"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "例如 iPad Air"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "添加")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = field
+        if alert.runModal() == .alertFirstButtonReturn { add(name: field.stringValue) }
+    }
+
+    // MARK: 通用
 
     func toggleLaunchAtLogin(_ on: Bool) {
         loginError = nil
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            loginError = "开机自动打开没有设置成功：\(error.localizedDescription)。请先把 UU远程伴侣 放进「应用程序」文件夹，再试一次。"
+            loginError = "没有设置成功。请先把 UU远程伴侣 放进「应用程序」文件夹，再试一次。"
             Log.info("⚠️ 开机启动设置失败：\(error.localizedDescription)")
         }
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -87,14 +154,12 @@ final class SettingsModel: ObservableObject {
         autoVirtual = on
         setPaused?(!on)
         Log.info("设置：自动启动虚拟屏 → \(on ? "开" : "关")")
-        if !fallbackAvailable && expanded == .fallback { withAnimation { expanded = nil } }
     }
 
     func toggleDisablePhysical(_ on: Bool) {
         disablePhysical = on
         setDisablePhysical?(on)
         Log.info("设置：自动软关闭物理屏 → \(on ? "开" : "关")")
-        if !on && expanded == .fallback { withAnimation { expanded = nil } }
     }
 
     /// 只有在这里开启，看门狗才会安装为 LaunchAgent 并加载；关闭即卸载
@@ -106,10 +171,10 @@ final class SettingsModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.refresh() }
     }
 
-    func showAbout() {
+    static func showAbout() {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版"
         let credits = NSAttributedString(
-            string: "用平板或手机通过 UU远程 操控这台 Mac 时，它会自动准备一块和你的设备尺寸一致的屏幕，让画面刚好铺满；断开后一切恢复原样。\n\n使用的开源组件：PermissionFlow、TourKit、FreeDisplay（均为 MIT 协议）",
+            string: "用平板或手机通过 UU远程 操控这台 Mac 时，它会自动准备一块和你的设备尺寸一致的屏幕，让画面刚好铺满；断开后一切恢复原样。\n\n使用的开源组件：PermissionFlow、FreeDisplay（均为 MIT 协议）",
             attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
         NSApp.activate(ignoringOtherApps: true)
         NSApp.orderFrontStandardAboutPanel(options: [
@@ -118,268 +183,388 @@ final class SettingsModel: ObservableObject {
             .credits: credits,
         ])
     }
-
-    /// 完全退出：停掉本次登录中的看门狗（不卸载，下次打开 App 或重新登录时恢复），再退出主程序
-    func quitCompletely() {
-        Log.info("完全退出：停止看门狗并退出主程序")
-        WatchdogAgent.stopForSession()
-        NSApp.terminate(nil)
-    }
 }
 
-// MARK: - 快捷键示意图（⌃ ⌥ ⌘ 9 四个键）
+// MARK: - 共用小部件
 
-private struct HotkeyCap: View {
-    let symbol: String
-    var name: String? = nil
+/// 按真实比例画出的屏幕，标出像素尺寸；用来一眼看出比例对不对
+struct ScreenPreview: View {
+    let width: Int
+    let height: Int
+    var hiDPI = true
+    var box = CGSize(width: 340, height: 190)
 
-    var body: some View {
-        RoundedRectangle(cornerRadius: 10)
-            .fill(Color.accentColor)
-            .shadow(color: .black.opacity(0.18), radius: 1, y: 2)
-            .overlay(
-                VStack(spacing: 2) {
-                    Text(symbol).font(.system(size: name == nil ? 28 : 24, weight: .semibold))
-                    if let name { Text(name).font(.system(size: 11, weight: .medium)) }
-                }
-                .foregroundStyle(.white)
-            )
-            .frame(width: name == nil ? 64 : 78, height: 64)
+    private var size: CGSize {
+        guard width > 0, height > 0 else { return box }
+        let r = CGFloat(width) / CGFloat(height)
+        return r > box.width / box.height ? CGSize(width: box.width, height: box.width / r) : CGSize(width: box.height * r, height: box.height)
     }
-}
-
-struct HotkeyKeysView: View {
-    var body: some View {
-        HStack(spacing: 10) {
-            HotkeyCap(symbol: "⌃", name: "control")
-            plus
-            HotkeyCap(symbol: "⌥", name: "option")
-            plus
-            HotkeyCap(symbol: "⌘", name: "command")
-            plus
-            HotkeyCap(symbol: "9")
-        }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.06)))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("快捷键：同时按下 control、option、command 和 9")
-    }
-
-    private var plus: some View {
-        Image(systemName: "plus").font(.system(size: 16, weight: .bold)).foregroundStyle(.secondary)
-    }
-}
-
-// MARK: - 面板
-
-private struct Card<Content: View>: View {
-    let icon: String
-    let title: String
-    let tag: String
-    @ViewBuilder var content: () -> Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: icon).font(.title3).foregroundStyle(.tint).frame(width: 24)
-                Text(title).font(.headline)
-                Text(tag).font(.caption).foregroundStyle(.secondary)
-            }
-            content()
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-    }
-}
-
-// MARK: - 工作原理图
-
-/// 虚线箭头，中间带说明文字；纵向对齐到图标中线
-private struct DashedConnector: View {
-    let label: String
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            GeometryReader { geo in
-                let w = geo.size.width
-                ZStack {
-                    Path { p in
-                        p.move(to: CGPoint(x: 0, y: 5))
-                        p.addLine(to: CGPoint(x: w - 8, y: 5))
-                    }
-                    .stroke(Color.secondary, style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [6, 6]))
-                    Path { p in
-                        p.move(to: CGPoint(x: w - 10, y: 0))
-                        p.addLine(to: CGPoint(x: w, y: 5))
-                        p.addLine(to: CGPoint(x: w - 10, y: 10))
-                    }
-                    .stroke(Color.secondary, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                }
-            }
-            .frame(height: 10)
-        }
-        .padding(.top, 44)  // 文字 + 线大约落在 128 图标的垂直中部
-        .frame(minWidth: 70, maxWidth: .infinity)
-    }
-}
-
-/// 控制端图标：平板 + 手机 组合
-private struct ControllerIcon: View {
-    var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            Image(systemName: "ipad.landscape")
-                .resizable().aspectRatio(contentMode: .fit)
-                .frame(width: 112)
-                .offset(x: -8, y: -14)
-            Image(systemName: "iphone")
-                .resizable().aspectRatio(contentMode: .fit)
-                .frame(height: 64)
-                .padding(4)
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .windowBackgroundColor)))
-        }
-        .frame(width: 128, height: 128)
-    }
-}
-
-private struct FlowNode<Icon: View>: View {
-    let caption: String
-    let buttonTitle: String
-    var enabled = true
-    var selected = false
-    var hint: String? = nil
-    let action: () -> Void
-    @ViewBuilder var icon: () -> Icon
 
     var body: some View {
         VStack(spacing: 10) {
-            icon()
-                .font(.system(size: 96, weight: .light))
-                .foregroundStyle(enabled ? Color.accentColor : Color.secondary.opacity(0.45))
-                .frame(width: 128, height: 128)
-            Text(caption).font(.subheadline.weight(.medium)).foregroundStyle(enabled ? .primary : .secondary)
-            Group {
-                if selected {
-                    Button(action: action) { Label(buttonTitle, systemImage: "chevron.up") }
-                        .buttonStyle(.borderedProminent)
-                } else {
-                    Button(action: action) { Label(buttonTitle, systemImage: "chevron.down") }
-                        .buttonStyle(.bordered)
-                }
-            }
-            .controlSize(.large)
-            .disabled(!enabled)
-            .help(hint ?? "")
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(LinearGradient(colors: [Color.accentColor.opacity(0.85), Color.accentColor.opacity(0.55)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.12)))
+                .overlay(
+                    Text(verbatim: "\(width) × \(height)")
+                        .font(.system(size: 22, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                )
+                .frame(width: size.width, height: size.height)
+                .shadow(color: Color.accentColor.opacity(0.25), radius: 12, y: 4)
+                .frame(width: box.width, height: box.height)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: width)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: height)
+            Text(verbatim: hiDPI && width > 1 && height > 1
+                 ? "高清 · 界面按 \(width / 2) × \(height / 2) 显示"
+                 : "标准 · 界面按 \(width) × \(height) 显示")
+                .font(.callout).foregroundStyle(.secondary).monospacedDigit()
         }
-        .frame(width: 180)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("屏幕尺寸 \(width) 乘 \(height)")
     }
 }
 
-// MARK: - 展开面板
+struct KeyCaps: View {
+    var size: CGFloat = 44
 
-/// 被控制端：开机启动 / 自动启动虚拟屏 / 自动软关闭物理屏
-struct ControlledPanel: View {
-    @ObservedObject var model: SettingsModel
-
-    private func row(_ title: String, _ detail: String, isOn: Binding<Bool>, enabled: Bool = true) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.headline).foregroundStyle(enabled ? .primary : .secondary)
-                Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 12)
-            Toggle("", isOn: isOn).toggleStyle(.switch).labelsHidden().disabled(!enabled)
+    private func cap(_ symbol: String, _ name: String?) -> some View {
+        VStack(spacing: 1) {
+            Text(symbol).font(.system(size: size * 0.42, weight: .medium, design: .rounded))
+            if let name { Text(name).font(.system(size: size * 0.2)) }
         }
+        .frame(width: name == nil ? size : size * 1.3, height: size)
+        .background(RoundedRectangle(cornerRadius: size * 0.2, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: size * 0.2, style: .continuous).strokeBorder(Color.primary.opacity(0.15)))
+        .shadow(color: .black.opacity(0.12), radius: 0.5, y: 1.5)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("设置这台 Mac").font(.title3.bold())
-            row("开机时自动打开",
-                "开机后它会安静地待在菜单栏里，平板或手机随时连上都能用。",
-                isOn: Binding(get: { model.launchAtLogin }, set: { model.toggleLaunchAtLogin($0) }))
-            if let err = model.loginError {
-                Text(err).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-            }
-            Divider()
-            row("自动准备虚拟屏幕",
-                "平板或手机连上这台 Mac 时，自动准备一块和它尺寸一致的屏幕，远程画面刚好铺满、文字清晰；断开后自动收起。关掉后，连上时不做任何调整。",
-                isOn: Binding(get: { model.autoVirtual }, set: { model.toggleAutoVirtual($0) }))
-            Divider()
-            row("远程时熄灭 Mac 的屏幕",
-                "远程期间，Mac 自带的屏幕和外接显示器会暂时熄灭，只留下那块虚拟屏幕，打开的窗口不会跑到你看不见的地方。断开后屏幕会自动亮回来。电脑、平板和手机连接时都可以使用。万一屏幕没有亮回来，可以看看「找回屏幕的方法」。",
-                isOn: Binding(get: { model.disablePhysical }, set: { model.toggleDisablePhysical($0) }),
-                enabled: model.autoVirtual)
-            if !model.autoVirtual {
-                Text("要先打开「自动准备虚拟屏幕」。").font(.caption).foregroundStyle(.secondary)
-            }
+        HStack(spacing: 6) {
+            cap("⌃", "control")
+            cap("⌥", "option")
+            cap("⌘", "command")
+            cap("9", nil)
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("快捷键：control、option、command 和 9")
     }
 }
 
-/// 兜底选项：快捷键 + 看门狗
-struct FallbackPanel: View {
+/// 授权状态 + 授权按钮（设置「通用」页与首次引导共用）
+struct PermissionRow: View {
+    let trusted: Bool
+
+    private var appURL: URL { Bundle.main.bundleURL }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                // macOS 27 起叫「设备控制和数据访问」，更早为「辅助功能」；固定取简体中文
+                Text(PermissionFlowResources.localizedString(
+                    for: PermissionFlowResources.accessibilityName(), localeIdentifier: "zh-Hans"))
+                Text(trusted ? "用来读取 UU远程 里显示的设备名称，不会读取其他内容。"
+                             : "点「授权」后，把旁边小窗口里的 UU远程伴侣 拖进列表。如果列表里已经有它却还显示未授权，先点「−」删掉再拖一次。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if trusted {
+                Label("已授权", systemImage: "checkmark.circle.fill").foregroundStyle(.green).labelStyle(.titleAndIcon)
+            } else {
+                PermissionFlowButton(
+                    pane: .accessibility,
+                    suggestedAppURLs: [appURL],
+                    configuration: .init(requiredAppURLs: [appURL], promptForAccessibilityTrust: false, localeIdentifier: "zh-Hans")
+                ) { _ in Text("授权") }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+}
+
+// MARK: - 侧边栏
+
+private struct DeviceSidebarRow: View {
+    let cfg: DeviceConfig
+    let isDefault: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: cfg.kind.symbol)
+                .font(.system(size: 15))
+                .foregroundStyle(.tint)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(cfg.name).lineLimit(1)
+                Text(verbatim: "\(cfg.width) × \(cfg.height)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+            Spacer(minLength: 4)
+            if cfg.needsReview {
+                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange).help("尺寸是推测的，请核对")
+            } else if isDefault {
+                Image(systemName: "star.fill").font(.caption2).foregroundStyle(.secondary).help("认不出设备时用这台")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+private struct Sidebar: View {
     @ObservedObject var model: SettingsModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("找回屏幕的方法").font(.title3.bold())
-                Text("远程结束后，屏幕一般会自动亮回来。万一没有，用下面的方法就能找回。").foregroundStyle(.secondary)
-            }
-
-            Card(icon: "keyboard", title: "快捷键", tag: "随时可用") {
-                Text("坐在 Mac 前、屏幕黑着的时候，同时按下 **⌃ control + ⌥ option + ⌘ command + 9**，所有屏幕会立刻亮起来。远程画面不受影响，这次连接期间也不会再熄灭屏幕。")
-                    .fixedSize(horizontal: false, vertical: true)
-                HotkeyKeysView()
-                Text("点设置窗口或菜单栏里的「立即恢复所有屏幕」，效果一样。")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-
-            Card(icon: "shield.lefthalf.filled", title: "后台守护", tag: "可选") {
-                Text("打开后，会有一个小助手在后台值守，每 5 秒看一眼。遇到下面任一情况，它会自动把屏幕点亮：")
-                    .fixedSize(horizontal: false, vertical: true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("• UU远程伴侣 意外退出")
-                    Text("• UU远程伴侣 卡住超过 10 秒没反应")
-                    Text("• UU远程 已经断开，屏幕却一直没亮")
-                }
-                .font(.callout)
-                Text("就算这个小助手自己被关掉，系统也会在 5 秒内重新打开它。")
-                    .font(.callout).foregroundStyle(.secondary)
-
-                Divider()
-                Text("需要你允许的事").font(.subheadline.bold())
-                Text("打开后，macOS 会提示「已添加后台项目」，这是正常的。如果之后在「系统设置 › 通用 › 登录项与扩展」里关掉了 UU远程伴侣，守护就会失效，重新打开即可。它不需要其他权限；关掉这个开关，它就会被彻底移除。")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 12) {
-                    Toggle(isOn: Binding(get: { model.watchdogEnabled }, set: { model.toggleWatchdog($0) })) {
-                        Text("打开后台守护")
+        VStack(spacing: 0) {
+            List(selection: $model.page) {
+                Section("连接设备") {
+                    ForEach(model.devices) { d in
+                        DeviceSidebarRow(cfg: d, isDefault: model.defaultDevice == d.name)
+                            .tag(SettingsPage.device(d.name))
+                            .contextMenu {
+                                Button("认不出设备时用这台") { model.setDefault(d.name) }
+                                Divider()
+                                Button("移除", role: .destructive) { model.remove(d.name) }
+                            }
                     }
-                    .toggleStyle(.switch)
-                    if model.watchdogEnabled {
-                        Label(model.watchdogRunning ? "正在值守" : "没有运行",
-                              systemImage: model.watchdogRunning ? "checkmark.circle.fill" : "exclamationmark.circle")
-                            .foregroundStyle(model.watchdogRunning ? .green : .orange)
-                        if !model.watchdogRunning {
-                            Button("去系统设置里允许") { SystemSettings.open(.loginItems) }
+                    if model.devices.isEmpty {
+                        Text("还没有设备").foregroundStyle(.secondary)
+                    }
+                }
+                Section("这台 Mac") {
+                    Label("通用", systemImage: "gearshape").tag(SettingsPage.general)
+                    Label("找回屏幕", systemImage: "lifepreserver").tag(SettingsPage.recovery)
+                }
+            }
+            .listStyle(.sidebar)
+
+            Divider()
+            HStack(spacing: 2) {
+                Button { model.promptAdd() } label: { Image(systemName: "plus").frame(width: 22, height: 20) }
+                    .help("手动添加设备")
+                Button { model.importFromUU() } label: { Image(systemName: "arrow.clockwise").frame(width: 22, height: 20) }
+                    .help("从 UU远程 重新读取设备列表")
+                Spacer()
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+        }
+        .frame(width: 230)
+    }
+}
+
+// MARK: - 设备详情
+
+private struct DeviceDetail: View {
+    @ObservedObject var model: SettingsModel
+    @Binding var cfg: DeviceConfig
+
+    private var presetSelection: Binding<String> {
+        Binding(get: {
+            guard let p = Presets.preset(id: cfg.presetID), p.kind == cfg.kind else { return Presets.customID }
+            return p.id
+        }, set: { id in
+            cfg.presetID = id == Presets.customID ? nil : id
+            if let p = Presets.preset(id: id) { cfg.width = p.width; cfg.height = p.height }
+        })
+    }
+
+    private var kindSelection: Binding<DeviceKind> {
+        Binding(get: { cfg.kind }, set: { k in
+            cfg.kind = k
+            if Presets.preset(id: cfg.presetID)?.kind != k {
+                let fresh = DeviceConfig.make(name: cfg.name, kind: k)
+                cfg.presetID = fresh.presetID; cfg.width = fresh.width; cfg.height = fresh.height
+            }
+        })
+    }
+
+    private var isCustom: Bool { presetSelection.wrappedValue == Presets.customID }
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(spacing: 14) {
+                    ScreenPreview(width: cfg.width, height: cfg.height, hiDPI: cfg.hiDPI)
+                    Picker("", selection: kindSelection) {
+                        ForEach(DeviceKind.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 240)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+
+            if cfg.needsReview {
+                Section {
+                    Label {
+                        Text("这是按「\(cfg.kind.label)」推测的常见尺寸，不一定适合这台设备。请查到它的屏幕分辨率，选「自定义」填进去；对得上就不会有黑边。")
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+                    }
+                    Button("尺寸没问题") { cfg.presetID = nil }
+                }
+            }
+
+            Section {
+                Picker("屏幕尺寸", selection: presetSelection) {
+                    ForEach(Presets.all.filter { $0.kind == cfg.kind }) { p in
+                        Text(verbatim: "\(p.name)  \(p.width)×\(p.height)").tag(p.id)
+                    }
+                    Divider()
+                    Text("自定义").tag(Presets.customID)
+                }
+                if isCustom {
+                    LabeledContent("宽 × 高（像素）") {
+                        HStack(spacing: 6) {
+                            TextField("宽", value: $cfg.width, format: .number.grouping(.never))
+                                .frame(width: 70).multilineTextAlignment(.trailing)
+                            Text("×").foregroundStyle(.secondary)
+                            TextField("高", value: $cfg.height, format: .number.grouping(.never))
+                                .frame(width: 70).multilineTextAlignment(.trailing)
+                        }
+                        .labelsHidden()
+                    }
+                    if cfg.width < cfg.height {
+                        Text("请按横屏填写：大的数填「宽」，小的数填「高」。")
+                            .font(.caption).foregroundStyle(.orange)
+                    } else {
+                        Text("填规格表上的原始分辨率，不要自己除以 2。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Toggle(isOn: $cfg.hiDPI) {
+                    Text("高清")
+                    Text("文字和图标更清晰（推荐）")
+                }
+            }
+
+            Section {
+                Toggle(isOn: Binding(get: { model.defaultDevice == cfg.name },
+                                     set: { model.setDefault($0 ? cfg.name : "") })) {
+                    Text("认不出设备时用这台")
+                    Text("读不到连接设备的名字，或它不在列表里时，按这台的尺寸准备屏幕")
+                }
+            }
+
+            Section {
+                HStack {
+                    Spacer()
+                    Button("移除这台设备", role: .destructive) { model.remove(cfg.name) }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle(cfg.name)
+    }
+}
+
+// MARK: - 通用
+
+private struct GeneralPage: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: Binding(get: { model.autoVirtual }, set: { model.toggleAutoVirtual($0) })) {
+                    Text("连上时自动准备屏幕")
+                    Text("按连接设备的尺寸准备一块虚拟屏幕，断开后收起。关掉后连上时不做任何调整。")
+                }
+                Toggle(isOn: Binding(get: { model.disablePhysical }, set: { model.toggleDisablePhysical($0) })) {
+                    Text("远程时熄灭 Mac 的屏幕")
+                    Text("只留下虚拟屏幕，窗口不会跑到看不见的地方；断开后自动亮回来。")
+                }
+                .disabled(!model.autoVirtual)
+            }
+
+            Section {
+                Picker("认不出设备时", selection: Binding(get: { model.defaultDevice }, set: { model.setDefault($0) })) {
+                    Text("不调整").tag("")
+                    ForEach(model.devices) { Text($0.name).tag($0.name) }
+                }
+            } footer: {
+                Text("读不到连接设备的名字，或它不在列表里时使用。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("开机时自动打开", isOn: Binding(get: { model.launchAtLogin }, set: { model.toggleLaunchAtLogin($0) }))
+                if let err = model.loginError {
+                    Text(err).font(.caption).foregroundStyle(.orange)
+                }
+            }
+
+            Section("权限") {
+                PermissionRow(trusted: model.trusted)
+            }
+
+            Section {
+                HStack {
+                    Button("关于 UU远程伴侣") { SettingsModel.showAbout() }
+                    Spacer()
+                    Button("退出 UU远程伴侣") { NSApp.terminate(nil) }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("通用")
+    }
+}
+
+// MARK: - 找回屏幕
+
+private struct RecoveryPage: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Form {
+            Section {
+                VStack(spacing: 14) {
+                    KeyCaps(size: 52)
+                    Text("屏幕黑着的时候，坐在 Mac 前按下这组键，所有屏幕立刻亮起来。\n远程画面不受影响，这次连接期间也不会再熄灭。")
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("现在点亮所有屏幕") { model.restorePhysical?() }
+                        .disabled(!model.physicalOff)
+                        .help(model.physicalOff ? "" : "现在没有熄灭的屏幕")
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+            }
+
+            Section {
+                Toggle(isOn: Binding(get: { model.watchdogEnabled }, set: { model.toggleWatchdog($0) })) {
+                    Text("后台守护")
+                    Text("UU远程伴侣 意外退出、卡住，或 UU远程 断开后屏幕没亮时，几秒内自动点亮屏幕。")
+                }
+                if model.watchdogEnabled {
+                    LabeledContent("状态") {
+                        if model.watchdogRunning {
+                            Label("正在值守", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        } else {
+                            HStack {
+                                Label("没有运行", systemImage: "exclamationmark.circle").foregroundStyle(.orange)
+                                Button("去系统设置允许") { SystemSettings.open(.loginItems) }
+                            }
                         }
                     }
                 }
+            } footer: {
+                Text("打开时 macOS 会提示「已添加后台项目」，这是正常的。关掉开关即彻底移除。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
-            if !model.watchdogEnabled {
-                Label("没打开后台守护时：如果 UU远程伴侣 意外退出，屏幕可能会一直黑着。重新打开 UU远程伴侣 或重启 Mac 就能恢复。",
-                      systemImage: "info.circle")
-                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Section {
+                Text("以上都不行时，重新打开 UU远程伴侣，或者重启 Mac，屏幕一定会恢复。")
+                    .font(.callout).foregroundStyle(.secondary)
             }
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .formStyle(.grouped)
+        .navigationTitle("找回屏幕")
     }
 }
 
@@ -387,132 +572,75 @@ struct FallbackPanel: View {
 
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
-    /// 离屏渲染时展开内容不放进 ScrollView（便于检查完整排版）
-    var forRender = false
 
-    @ViewBuilder private var expandedContent: some View {
-        switch model.expanded {
-        case .controller:
-            WizardView(model: model.devices, openPermissions: model.openPermissions, embedded: true,
-                       savedHint: model.savedHint) { model.saveDevices() }
-                .frame(height: 500)
-        case .controlled:
-            ControlledPanel(model: model)
-        case .fallback:
-            if forRender {
-                FallbackPanel(model: model)
+    @ViewBuilder private var detail: some View {
+        switch model.page {
+        case .device(let name)?:
+            if let b = model.binding(for: name) {
+                DeviceDetail(model: model, cfg: b).id(name)
             } else {
-                ScrollView { FallbackPanel(model: model) }.frame(height: 520)
+                GeneralPage(model: model)
             }
-        case .none:
-            EmptyView()
+        case .recovery?:
+            RecoveryPage(model: model)
+        case .general?, nil:
+            GeneralPage(model: model)
         }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // 上：工作原理图
-            HStack(alignment: .top, spacing: 0) {
-                FlowNode(caption: "你的电脑、平板和手机", buttonTitle: "设置连接设备",
-                         selected: model.expanded == .controller, action: { model.toggle(.controller) }) {
-                    ControllerIcon()
-                }
-                DashedConnector(label: "通过 UU远程 操控")
-                FlowNode(caption: "这台 Mac", buttonTitle: "设置这台 Mac",
-                         selected: model.expanded == .controlled, action: { model.toggle(.controlled) }) {
-                    Image(systemName: "desktopcomputer")
-                }
-                DashedConnector(label: "熄灭 Mac 屏幕时")
-                FlowNode(caption: "万一屏幕没亮", buttonTitle: "找回屏幕的方法",
-                         enabled: model.fallbackAvailable, selected: model.expanded == .fallback,
-                         hint: model.fallbackAvailable ? nil : "先在「设置这台 Mac」里打开「远程时熄灭 Mac 的屏幕」",
-                         action: { model.toggle(.fallback) }) {
-                    Image(systemName: "lifepreserver")
-                }
-            }
-            .padding(.horizontal, 28)
-            .padding(.top, 28)
-            .padding(.bottom, 20)
-
-            if model.expanded != nil {
-                expandedContent
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.04)))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08)))
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 16)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
+        HStack(spacing: 0) {
+            Sidebar(model: model)
             Divider()
-
-            // 中：常用操作
-            HStack(spacing: 14) {
-                Button { model.restorePhysical?() } label: {
-                    Label("立即恢复所有屏幕", systemImage: "display.2")
+            VStack(spacing: 0) {
+                if let msg = model.importMessage {
+                    HStack {
+                        Image(systemName: "info.circle")
+                        Text(msg).fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button { model.importMessage = nil } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
+                    }
+                    .font(.callout)
+                    .padding(10)
+                    .background(Color.orange.opacity(0.12))
                 }
-                .disabled(!model.physicalOff)
-                .help(model.physicalOff ? "也可以按 ⌃ control + ⌥ option + ⌘ command + 9" : "现在没有熄灭的屏幕")
-                Button { model.openPermissions?() } label: { Label("权限设置", systemImage: "hand.raised") }
-                Button { model.openTour?() } label: { Label("功能介绍", systemImage: "sparkles") }
+                detail.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .controlSize(.large)
-            .padding(.vertical, 16)
-
-            Divider()
-
-            // 下：关于 / 完全退出
-            HStack(spacing: 10) {
-                Spacer()
-                Button("关于 UU远程伴侣") { model.showAbout() }
-                Button("完全退出", role: .destructive) { model.quitCompletely() }
-                    .help("关闭 UU远程伴侣，后台守护也会一起停下（下次打开时恢复）")
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
         }
-        .frame(width: 900)
-        .clipped()
+        .frame(width: 780, height: 560)
     }
 }
 
 final class SettingsWindowController {
     private var window: NSWindow?
     private var model: SettingsModel?
-    /// 自测用：当前设置窗口的模型与窗口
     var currentModel: SettingsModel? { model }
     var currentWindow: NSWindow? { window }
-    var openPermissions: (() -> Void)?
-    var openTour: (() -> Void)?
     var onConfigChanged: (() -> Void)?
     var setDisablePhysical: ((Bool) -> Void)?
     var setPaused: ((Bool) -> Void)?
     var restorePhysical: (() -> Void)?
 
-    /// - Parameter pane: 打开时展开的面板，nil 表示全部收起
-    func show(pane: SettingsPane? = nil) {
+    /// - Parameter page: 打开时显示的页面，nil 表示保持默认（优先显示需要核对的设备）
+    func show(page: SettingsPage? = nil) {
         if let window, let model {
-            if let pane, model.expanded != pane { model.toggle(pane) }
+            if let page { model.page = page }
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
         let model = SettingsModel()
-        model.expanded = (pane == .fallback && !model.fallbackAvailable) ? nil : pane
+        if let page { model.page = page }
         model.onConfigChanged = onConfigChanged
         model.setDisablePhysical = setDisablePhysical
         model.setPaused = setPaused
         model.restorePhysical = restorePhysical
-        model.openPermissions = openPermissions
-        model.openTour = openTour
         model.start()
         self.model = model
-        // 用 NSHostingController 作为内容控制器：窗口尺寸随 SwiftUI 内容（展开/收起）自动调整。
-        // 注意：直接给 NSHostingView 设 sizingOptions = .preferredContentSize 会让窗口初始尺寸为 0×0（看不见）
         let hosting = NSHostingController(rootView: SettingsView(model: model))
-        hosting.sizingOptions = [.preferredContentSize]
         let w = NSWindow(contentViewController: hosting)
         w.styleMask = [.titled, .closable, .miniaturizable]
-        w.title = "UU远程伴侣 设置"
+        w.title = "UU远程伴侣"
         w.isReleasedWhenClosed = false
         w.setContentSize(hosting.view.fittingSize)  // 先定好尺寸再居中，否则按 0×0 居中会偏到右侧
         w.center()
@@ -526,31 +654,41 @@ final class SettingsWindowController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// 调试：渲染各状态为 PNG（--render-settings <目录>）
+    /// 调试：渲染各页面为 PNG（--render-settings <目录>）
     static func render(to dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let cases: [(String, SettingsPane?, Bool, Bool)] = [
-            ("collapsed-physical-off", nil, false, false),
-            ("collapsed-physical-on", nil, true, false),
-            ("controller", .controller, false, false),
-            ("controlled", .controlled, true, false),
-            ("fallback", .fallback, true, true),
-        ]
-        for (name, pane, physical, watchdog) in cases {
-            let model = SettingsModel()
-            model.autoVirtual = true
-            model.disablePhysical = physical
-            model.watchdogEnabled = watchdog
-            model.watchdogRunning = false
-            model.expanded = pane
-            let view = NSHostingView(rootView: SettingsView(model: model, forRender: true))
-            view.frame = NSRect(origin: .zero, size: view.fittingSize)
-            view.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
-            if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+        let model = SettingsModel()
+        if ProcessInfo.processInfo.environment["UUDISPLAY_RENDER_SAMPLE"] == "1" || model.devices.isEmpty {
+            model.devices = ["iPad Air", "OPPO Pad 3 Pro", "iPhone 17", "Xiaomi Pad 6", "M1"].map {
+                DeviceConfig.make(name: $0, kind: Presets.guessKind(name: $0, isComputerGroup: $0 == "M1"))
+            }
+            model.defaultDevice = "iPad Air"
+        }
+        var pages: [(String, SettingsPage)] = [("general", .general), ("recovery", .recovery)]
+        if let d = model.devices.first(where: { !$0.needsReview }) { pages.append(("device", .device(d.name))) }
+        if let d = model.devices.first(where: \.needsReview) { pages.append(("device-review", .device(d.name))) }
+        for (name, page) in pages {
+            model.page = page
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: model)))
+            w.styleMask = [.titled]
+            w.title = "UU远程伴侣"
+            w.setContentSize(NSSize(width: 780, height: 560))
+            w.orderFrontRegardless()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+            // 侧边栏毛玻璃离屏画不出来；有屏幕录制权限时用 screencapture 截真实窗口
+            let out = dir.appendingPathComponent("settings-\(name).png")
+            let shot = Process()
+            shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            shot.arguments = ["-x", "-o", "-l", "\(w.windowNumber)", out.path]
+            try? shot.run()
+            shot.waitUntilExit()
+            if shot.terminationStatus == 0, FileManager.default.fileExists(atPath: out.path) { w.close(); continue }
+            if let view = w.contentView?.superview,
+               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
                 view.cacheDisplay(in: view.bounds, to: rep)
                 try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("settings-\(name).png"))
             }
+            w.close()
         }
     }
 }
