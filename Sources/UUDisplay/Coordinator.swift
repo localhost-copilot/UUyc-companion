@@ -1,5 +1,6 @@
 // 连入/断开 → 选设备配置 → 建屏/还原
 // 设备名通常与连入同秒出现；读不到时先按「上次连入设备」或「默认设备」建屏，名称出现后不一致再重建
+// 连接期间持续盯控制端列表：多台设备先后接入/离开时（UU 的连接状态不中断），切到最新接入且仍在的那台
 import AppKit
 
 final class Coordinator {
@@ -15,6 +16,9 @@ final class Coordinator {
     private var connectedAt = Date.distantPast
     private var usedFallback = false
     private var openedUUWindow = false
+    private var watchTimer: Timer?
+    /// 上一次读到的控制端列表（按 UU 表格顺序）
+    private var knownControllers: [String] = []
 
     /// 调试：模拟连入的控制端名称（不读 UU）
     var simulatedName: String?
@@ -65,6 +69,7 @@ final class Coordinator {
     func handleDisconnect() {
         namePoll?.invalidate()
         namePoll = nil
+        stopWatching()
         display.remove()
         controllerName = nil
         onChange?()
@@ -77,6 +82,7 @@ final class Coordinator {
 
         if let name = simulatedName ?? readControllerName() {
             resolve(name)
+            startWatching()
             return true
         }
         // 2 秒还没名字：先按上次/默认设备建屏，继续等名字
@@ -105,8 +111,42 @@ final class Coordinator {
             }
             return nil
         case .some(let names):
-            return names.first
+            knownControllers = names
+            // 同时有多台时取最后一台（UU 表格按接入先后排列，最新接入的在最后）
+            return names.last
         }
+    }
+
+    // MARK: - 控制端变化
+
+    private func startWatching() {
+        guard simulatedName == nil, watchTimer == nil else { return }
+        watchTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.checkControllers() }
+    }
+
+    private func stopWatching() {
+        watchTimer?.invalidate()
+        watchTimer = nil
+        knownControllers = []
+    }
+
+    /// 新接入的设备优先；当前设备离开时换成仍在的最后一台
+    private func checkControllers() {
+        guard connected, !store.config.paused, UUReader.isTrusted,
+              let names = UUReader.readControllers(), !names.isEmpty, names != knownControllers else { return }
+        let added = names.filter { !knownControllers.contains($0) }
+        knownControllers = names
+        let target: String
+        if let newest = added.last {
+            target = newest
+        } else if let current = controllerName, names.contains(current) {
+            return
+        } else {
+            target = names.last!
+        }
+        guard target != controllerName else { return }
+        Log.info("控制端变化：\(names)，切换到「\(target)」")
+        resolve(target)
     }
 
     private func resolve(_ name: String) {
@@ -152,6 +192,7 @@ final class Coordinator {
         store.config.paused = paused
         if paused {
             namePoll?.invalidate()
+            stopWatching()
             display.remove()
         } else if connected {
             handleConnect()
