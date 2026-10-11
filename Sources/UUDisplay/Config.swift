@@ -30,6 +30,7 @@ enum Presets {
     static let all: [Preset] = [
         Preset(id: "computer-1080p", name: "电脑 1080p（16:9）", kind: .computer, width: 1920, height: 1080),
         Preset(id: "computer-1440p", name: "电脑 1440p（16:9）", kind: .computer, width: 2560, height: 1440),
+        Preset(id: "computer-4k", name: "电脑 4K（16:9）", kind: .computer, width: 3840, height: 2160),
         Preset(id: "computer-16x10", name: "电脑（16:10）", kind: .computer, width: 2560, height: 1600),
         Preset(id: "oppo-pad-3-pro", name: "OPPO Pad 3 Pro", kind: .tablet, width: 3000, height: 2120),
         Preset(id: "ipad-air-11", name: "iPad Air 11 英寸", kind: .tablet, width: 2360, height: 1640),
